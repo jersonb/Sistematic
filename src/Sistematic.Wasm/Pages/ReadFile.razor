@@ -1,0 +1,203 @@
+﻿@page "/readerFile"
+@using Sistematic.Domain
+@using System.IO
+@using System.Text;
+
+<h1>Lê arquivo</h1>
+
+<p>
+    <label>
+        Infolrme o arquivo SPED Fiscal a ser importado.
+        <InputFile OnChange="@LoadFile" />
+    </label>
+</p>
+@if (Apuration.Count > 0)
+{
+    <h1>@Apuration.Count()</h1>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>CFOP</th>
+                <th>VL.CONTÁBIL</th>
+                <th>BASE DE CÁLCULO</th>
+                <th>ALÍQUOTA</th>
+                <th>ICMS</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Apuration)
+            {
+                <tr>
+                    <td>@item.Cfop</td>
+                    <td>@item.VlContabil</td>
+                    <td>@item.BaseCalc</td>
+                    <td>@item.Percent%</td>
+                    <td>@item.Icms</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+}
+<p>
+    <input type="button" value="Calcular" @onclick="Calculate" />
+</p>
+
+@if (isLoading)
+{
+    <p>Uploading...</p>
+}
+else
+{
+    if (string.IsNullOrEmpty(error))
+    {
+        if (Items.Count > 0)
+        {
+
+            <EditForm Model="selectedItens" OnSubmit="SelectItems">
+                <InputTextArea @bind-Value=selectedItens.ItemsToSelect />
+                <button type="submit">Submit</button>
+            </EditForm>
+        }
+
+        <h2>@Products.Count()</h2>
+
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Código</th>
+                    <th>Descrição</th>
+                    <th>Incentivado</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in Items)
+                {
+                    <tr>
+                        <td>@item.Code</td>
+                        <td>@item.Description</td>
+                        <td><input type="checkbox" checked=@item.Encouraged /></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+    }
+
+    <p>
+        @error
+    </p>
+
+}
+
+@code {
+    private long maxFileSize = 1024 * 15000;
+    private bool isLoading;
+    private string error;
+    private List<Item> Items = new();
+    private List<Product> Products = new();
+    private List<Product> Apuration = new();
+    private string toSelect = "";
+
+    private async Task LoadFile(InputFileChangeEventArgs e)
+    {
+        isLoading = true;
+
+        try
+        {
+
+            var ms = new MemoryStream();
+            await e.GetMultipleFiles()[0].OpenReadStream(maxFileSize).CopyToAsync(ms);
+            ms.Position = 0;
+            using var reader = new StreamReader(ms, Encoding.UTF7);
+
+            while (reader.Peek() >= 0)
+            {
+                var line = reader.ReadLine();
+
+                var filds = line.Split('|');
+                var register = filds[1];
+
+                if (register == "0200")
+                {
+                    var code = filds[2];
+                    var description = filds[3];
+
+                    var item = new Item
+                    {
+                        Code = code,
+                        Description = description
+                    };
+
+                    Items.Add(item);
+                }
+
+                if (register == "C170")
+                {
+                    var code = filds[3];
+                    var contabil = filds[7];
+                    var cfop = filds[11];
+                    var bc = filds[13];
+                    var percent = filds[14];
+                    var icms = filds[15];
+
+                    var product = new Product
+                    {
+                        Code = code,
+                        VlContabil = decimal.Parse(contabil),
+                        Cfop = cfop,
+                        BaseCalc = decimal.Parse(bc),
+                        Percent = decimal.Parse(percent),
+                        Icms = decimal.Parse(icms),
+
+                    };
+
+                    Products.Add(product);
+                }
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            error = ex.Message;
+        }
+
+        isLoading = false;
+
+    }
+
+    private SelectedItens selectedItens = new SelectedItens();
+
+    private async Task SelectItems()
+    {
+        isLoading = true;
+
+        Items = await selectedItens.Select(Items);
+
+        isLoading = false;
+    }
+
+    private void Calculate()
+    {
+        var selectedItems = Items.Where(i => i.Encouraged)
+                                 .Select(item => item.Code);
+        var selectedProducts = Products.Where(product => selectedItems.Contains(product.Code));
+
+        Apuration = selectedProducts.GroupBy(x => new { x.Cfop, x.Percent })
+                                   .Select(x => new Product
+                                   {
+                                       Cfop = x.Key.Cfop,
+                                       Percent = x.Key.Percent,
+                                       BaseCalc = x.Sum(s => s.BaseCalc),
+                                       VlContabil = x.Sum(s => s.VlContabil),
+                                       Icms = x.Sum(s => s.Icms),
+
+                                   })
+                                   .Where(x => x.Icms > 0)
+                                   .OrderBy(x => x.Cfop)
+                                   .ThenBy(x => x.Percent)
+                                   .ToList();
+    }
+
+}
